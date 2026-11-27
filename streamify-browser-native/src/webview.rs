@@ -4,7 +4,7 @@ use std::path::Path;
 use webview2_com::{
     take_pwstr, AcceleratorKeyPressedEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DocumentTitleChangedEventHandler, HistoryChangedEventHandler,
+    DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, SourceChangedEventHandler,
@@ -223,6 +223,31 @@ pub fn title(controller: &ICoreWebView2Controller) -> Result<String> {
         let mut title = PWSTR::null();
         controller.CoreWebView2()?.DocumentTitle(&mut title)?;
         Ok(take_pwstr(title))
+    }
+}
+
+/// Keep Spotify's controls but cut decorative CSS motion during software rendering.
+pub fn reduce_spotify_animations(controller: &ICoreWebView2Controller) {
+    let script = w!(r#"(() => {
+        const applied = Symbol.for('StreamifyReducedMotion');
+        if (location.origin !== 'https://open.spotify.com' || document[applied]) return;
+        const style = new CSSStyleSheet();
+        style.replaceSync(`*, *::before, *::after {
+            animation-duration: 1ms !important;
+            animation-delay: 0ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 1ms !important;
+            transition-delay: 0ms !important;
+            scroll-behavior: auto !important;
+        }`);
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
+        document[applied] = true;
+    })()"#);
+    unsafe {
+        if let Ok(view) = controller.CoreWebView2() {
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+            let _ = view.ExecuteScript(script, &handler);
+        }
     }
 }
 

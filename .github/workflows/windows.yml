@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: windows-${{ github.ref }}
@@ -43,15 +42,6 @@ jobs:
           $imports | Write-Output
           if ($LASTEXITCODE -ne 0) { throw 'Could not inspect executable dependencies.' }
           if ($imports -match '(VCRUNTIME|MSVCP|WebView2Loader|sqlite3).*\.dll') { throw 'An extra DLL is required.' }
-      - name: Download previous executable for the Spotify comparison
-        uses: actions/download-artifact@v8
-        with:
-          path: .spotify-baseline
-          artifact-ids: 15171383562
-          run-id: 45938414502
-          github-token: ${{ github.token }}
-      - name: Measure Spotify on the previous executable
-        run: python ../.github/scripts/windows-smoke.py ../.spotify-baseline/streamify-browser.exe --spotify-only --label "Previous executable"
       - name: Verify the Windows executable with WebView2
         run: python ../.github/scripts/windows-smoke.py target/$env:RUST_TARGET/release/streamify-browser.exe
       - name: Upload Windows x64 executable

@@ -9,4 +9,6 @@ Navegador para Windows 11 x64 con interfaz Rust/Win32 y motor Microsoft Edge Web
 
 Abre **☰ → Abrir Spotify** para ir al reproductor web. Para Twitch, selecciona **☰ → Abrir chat de Twitch…**, reemplaza `<canal>` por el nombre del canal y pulsa **Enter**. El chat se abre en su propia página, sin la transmisión de vídeo. También puedes escribir `twitch:nombre_del_canal` en la barra de direcciones.
 
+Para escuchar Spotify con menos actividad visual, pulsa **Ctrl+Mayús+M**. Pulsa el mismo atajo para volver al reproductor.
+
 Consulta la [arquitectura, atajos y pruebas](streamify-browser-native/README.md).

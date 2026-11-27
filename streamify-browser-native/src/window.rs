@@ -50,6 +50,7 @@ struct AppData {
     can_back: bool,
     can_forward: bool,
     bookmarked: bool,
+    listening: bool,
     error: Option<String>,
 }
 
@@ -175,6 +176,7 @@ pub fn create_main_window(db: Database) -> Result<HWND> {
             can_back: false,
             can_forward: false,
             bookmarked: false,
+            listening: false,
             error: None,
         }));
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::into_raw(data) as isize);
@@ -364,11 +366,58 @@ fn update_active_memory(hwnd: HWND, foreground: bool) {
     }
 }
 
+fn listening_available(data: &AppData) -> bool {
+    data.active.is_some()
+        && data
+            .tabs
+            .active_tab()
+            .is_some_and(|tab| url_util::is_spotify(&tab.url))
+}
+
+fn update_listening_ui(hwnd: HWND, listening: bool) {
+    unsafe {
+        let title = if listening {
+            w!("Streamify Browser – Modo escucha")
+        } else {
+            w!("Streamify Browser")
+        };
+        let _ = SetWindowTextW(hwnd, title);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+fn set_listening(hwnd: HWND, enabled: bool) {
+    let controller = with_app(hwnd, |data| {
+        if data.listening == enabled || (enabled && !listening_available(data)) {
+            return None;
+        }
+        data.active.as_ref().map(|live| live.controller.clone())
+    })
+    .flatten();
+    if let Some(controller) = controller {
+        let visible = !enabled && unsafe { !IsIconic(hwnd).as_bool() };
+        if webview::set_visible(&controller, visible).is_ok() {
+            with_app(hwnd, |data| data.listening = enabled);
+            update_listening_ui(hwnd, enabled);
+        }
+    }
+}
+
+fn toggle_listening(hwnd: HWND) {
+    if let Some(enabled) = with_app(hwnd, |data| !data.listening) {
+        set_listening(hwnd, enabled);
+    }
+}
+
 fn release_active(hwnd: HWND, keep_spotify: bool) {
-    let active = with_app(hwnd, |data| data.active.take()).flatten();
-    let Some(live) = active else {
+    let Some((Some(live), was_listening)) = with_app(hwnd, |data| {
+        (data.active.take(), mem::take(&mut data.listening))
+    }) else {
         return;
     };
+    if was_listening {
+        update_listening_ui(hwnd, false);
+    }
     let url = webview::source(&live.controller).ok();
     let title = webview::title(&live.controller).ok();
     let keep = with_app(hwnd, |data| {
@@ -494,6 +543,7 @@ fn webview_event(hwnd: HWND, event: u32, generation: usize, success: bool) {
     } else {
         None
     };
+    let spotify = url.as_deref().map(url_util::is_spotify);
     let title = if event == WM_WEBVIEW_TITLE_CHANGED || event == WM_WEBVIEW_NAV_COMPLETE {
         webview::title(&controller).ok()
     } else {
@@ -518,6 +568,12 @@ fn webview_event(hwnd: HWND, event: u32, generation: usize, success: bool) {
         data.tabs.active_id() == Some(tab_id)
     })
     .unwrap_or(false);
+    if active && spotify == Some(false) {
+        set_listening(hwnd, false);
+    }
+    if event == WM_WEBVIEW_NAV_COMPLETE && success && spotify == Some(true) {
+        webview::reduce_spotify_animations(&controller);
+    }
     if active && (event == WM_WEBVIEW_HISTORY_CHANGED || event == WM_WEBVIEW_NAV_COMPLETE) {
         refresh_history_buttons(hwnd, &controller);
     }
@@ -533,6 +589,9 @@ fn webview_event(hwnd: HWND, event: u32, generation: usize, success: bool) {
 fn navigate(hwnd: HWND, url: &str) {
     if !url_util::is_navigable(url) {
         return;
+    }
+    if !url_util::is_spotify(url) {
+        set_listening(hwnd, false);
     }
     with_app(hwnd, |data| {
         if let Some(tab) = data.tabs.active_tab_mut() {
@@ -560,6 +619,7 @@ const SHORTCUT_ADDRESS: usize = 1;
 const SHORTCUT_NEW_TAB: usize = 2;
 const SHORTCUT_CLOSE_TAB: usize = 3;
 const SHORTCUT_RELOAD: usize = 4;
+const SHORTCUT_LISTENING: usize = 5;
 
 pub fn shortcut(key: u32) -> Option<usize> {
     if key == u32::from(VK_F5.0) {
@@ -573,6 +633,7 @@ pub fn shortcut(key: u32) -> Option<usize> {
         0x54 => Some(SHORTCUT_NEW_TAB),
         0x57 => Some(SHORTCUT_CLOSE_TAB),
         0x52 => Some(SHORTCUT_RELOAD),
+        0x4d if unsafe { GetKeyState(i32::from(VK_SHIFT.0)) } < 0 => Some(SHORTCUT_LISTENING),
         _ => None,
     }
 }
@@ -590,6 +651,7 @@ fn run_shortcut(hwnd: HWND, command: usize) {
             }
         }
         SHORTCUT_RELOAD => click(hwnd, HoverButton::Reload),
+        SHORTCUT_LISTENING => toggle_listening(hwnd),
         _ => {}
     }
 }
@@ -668,7 +730,8 @@ unsafe extern "system" fn wnd_proc(
             }
             if let Some(controller) = active_controller(hwnd) {
                 let minimized = wparam.0 == SIZE_MINIMIZED as usize;
-                let _ = webview::set_visible(&controller, !minimized);
+                let listening = with_app(hwnd, |data| data.listening).unwrap_or(false);
+                let _ = webview::set_visible(&controller, !minimized && !listening);
                 update_active_memory(hwnd, !minimized && window_has_focus(hwnd));
                 if !minimized {
                     webview::resize_controller(&controller, hwnd);
@@ -927,8 +990,14 @@ fn click(hwnd: HWND, button: HoverButton) {
 }
 
 fn show_menu(hwnd: HWND) {
-    let bookmarks =
-        with_app(hwnd, |data| data.db.get_bookmarks(12).unwrap_or_default()).unwrap_or_default();
+    let (bookmarks, listening, can_listen) = with_app(hwnd, |data| {
+        (
+            data.db.get_bookmarks(12).unwrap_or_default(),
+            data.listening,
+            listening_available(data),
+        )
+    })
+    .unwrap_or_default();
     let mut point = POINT::default();
     let selected = unsafe {
         if GetCursorPos(&mut point).is_err() {
@@ -939,6 +1008,14 @@ fn show_menu(hwnd: HWND) {
         };
         let _ = AppendMenuW(menu, MF_STRING, 1, w!("Abrir Spotify"));
         let _ = AppendMenuW(menu, MF_STRING, 2, w!("Abrir chat de Twitch…"));
+        if can_listen {
+            let label = if listening {
+                w!("Mostrar Spotify\tCtrl+Mayús+M")
+            } else {
+                w!("Modo escucha de Spotify\tCtrl+Mayús+M")
+            };
+            let _ = AppendMenuW(menu, MF_STRING, 3, label);
+        }
         if !bookmarks.is_empty() {
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             for (index, bookmark) in bookmarks.iter().enumerate() {
@@ -948,7 +1025,7 @@ fn show_menu(hwnd: HWND) {
                     &bookmark.title
                 };
                 let text = HSTRING::from(name.replace('&', "&&"));
-                let _ = AppendMenuW(menu, MF_STRING, index + 3, &text);
+                let _ = AppendMenuW(menu, MF_STRING, index + 4, &text);
             }
         }
         let selection = TrackPopupMenu(
@@ -974,8 +1051,9 @@ fn show_menu(hwnd: HWND) {
             select_tab(hwnd, HoverButton::NewTab);
             focus_address(hwnd, Some("twitch:<canal>"));
         }
+        3 => toggle_listening(hwnd),
         selected => {
-            if let Some(bookmark) = bookmarks.get((selected - 3) as usize) {
+            if let Some(bookmark) = bookmarks.get((selected - 4) as usize) {
                 navigate(hwnd, &bookmark.url);
             }
         }
@@ -1010,13 +1088,18 @@ fn paint_window(hwnd: HWND) {
                 let mut content = client;
                 content.top = TOOLBAR_H;
                 FillRect(hdc, &content, data.input_brush);
-                if let Some(error) = &data.error {
+                let message = if data.listening {
+                    Some("Modo escucha de Spotify. Pulsa Ctrl+Mayús+M para volver al reproductor.")
+                } else {
+                    data.error.as_deref()
+                };
+                if let Some(message) = message {
                     content.left += 20;
                     content.top += 20;
                     let previous = SelectObject(hdc, data.font.into());
                     SetBkMode(hdc, TRANSPARENT);
                     SetTextColor(hdc, CLR_TEXT);
-                    draw_text(hdc, error, &mut content, DT_WORDBREAK | DT_NOPREFIX);
+                    draw_text(hdc, message, &mut content, DT_WORDBREAK | DT_NOPREFIX);
                     SelectObject(hdc, previous);
                 }
             }

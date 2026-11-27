@@ -1,6 +1,5 @@
 """Exercise the shipped Windows executable with an isolated profile and a local page."""
 
-import argparse
 import ctypes
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,8 +9,9 @@ from pathlib import Path
 import sqlite3
 from statistics import median
 import subprocess
+import sys
 import tempfile
-from threading import Thread
+from threading import Event, Thread
 import time
 
 
@@ -55,10 +55,17 @@ def wait_for(check, description, timeout=45):
 
 class Page(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/reduced-motion":
+            self.server.reduced_motion.set()
+            self.send_response(204)
+            self.end_headers()
+            return
         if self.path not in ("/first", "/second"):
             self.send_error(404)
             return
-        body = f"<!doctype html><title>Streamify {self.path[1:]}</title><p>Windows smoke test</p>".encode()
+        body = (f"<!doctype html><title>Streamify {self.path[1:]}</title><p>Windows smoke test</p>"
+                "<script>if (matchMedia('(prefers-reduced-motion: reduce)').matches) "
+                "fetch('/reduced-motion');</script>").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -73,6 +80,12 @@ def address(hwnd):
     buffer = ctypes.create_unicode_buffer(8193)
     send(get_item(hwnd, 1001), 0x000D, len(buffer), ctypes.addressof(buffer))  # WM_GETTEXT
     return buffer.value
+
+
+def listening_enabled(hwnd):
+    buffer = ctypes.create_unicode_buffer(128)
+    send(hwnd, 0x000D, len(buffer), ctypes.addressof(buffer))  # WM_GETTEXT
+    return buffer.value.endswith("Modo escucha")
 
 
 def navigate(hwnd, url):
@@ -172,7 +185,7 @@ def successful_site_navigation(database, prefix):
         ).fetchone()
 
 
-def measure_spotify(process, hwnd, database, label):
+def measure_spotify(process, hwnd, database):
     set_foreground_window(hwnd)
     navigate(hwnd, "https://open.spotify.com/")
     started = time.monotonic()
@@ -184,7 +197,7 @@ def measure_spotify(process, hwnd, database, label):
             snapshots.append((time.monotonic() - started, foreground_window() == hwnd, snapshot["stats"]))
     loaded = successful_site_navigation(database, "https://open.spotify.com/") is not None
     if not loaded or len(snapshots) < 4:
-        report(f"{label} | Spotify single-tab measurement unavailable")
+        report("Spotify single-tab measurement unavailable")
         return loaded
 
     idle = snapshots[-5:]
@@ -195,22 +208,25 @@ def measure_spotify(process, hwnd, database, label):
     duration = idle[-1][0] - idle[0][0]
     cpu_percent = cpu / 1e7 / duration / (os.cpu_count() or 1) * 100
     focused = sum(has_focus for _, has_focus, _ in snapshots)
-    report(f"{label} | Spotify only, signed out | {max(ram):.1f} MiB sampled peak, "
+    report(f"Spotify only, signed out | {max(ram):.1f} MiB sampled peak, "
            f"{median(ram[-5:]):.1f} MiB median idle private working set, "
            f"{median(committed):.1f} MiB median private commit, {cpu_percent:.3f}% idle CPU "
            f"({duration:.1f}s idle sample, foreground in {focused}/{len(snapshots)} snapshots)")
     return loaded
 
 
-def check_public_sites(exe, data, label="Current executable", spotify_only=False):
+def check_public_sites(exe, data):
     database = data / "Streamify Browser" / "streamify_browser.db"
     process, hwnd = start(exe, data)
     try:
-        spotify_loaded = measure_spotify(process, hwnd, database, label)
-        if spotify_only:
-            close(process, hwnd)
-            return
+        spotify_loaded = measure_spotify(process, hwnd, database)
         report(f"Spotify public page | {'loaded' if spotify_loaded else 'unverified in the runner'}")
+        if spotify_loaded:
+            assert post(hwnd, 0x8005, 5, 0)  # WM_BROWSER_SHORTCUT / listening mode
+            wait_for(lambda: listening_enabled(hwnd), "Spotify listening mode did not activate")
+            measure_idle(process.pid, "Spotify only in listening mode, signed out", settle=15, sample=25)
+            assert post(hwnd, 0x8005, 5, 0)
+            wait_for(lambda: not listening_enabled(hwnd), "The Spotify player did not return")
         assert post(hwnd, 0x0201, 1, 195 | (50 << 16))
         wait_for(lambda: not address(hwnd), "Twitch tab did not open")
         navigate(hwnd, "twitch:monstercat")
@@ -240,12 +256,14 @@ def main(exe):
         data = Path(directory)
         database = data / "Streamify Browser" / "streamify_browser.db"
         base = f"http://127.0.0.1:{server.server_port}"
+        server.reduced_motion = Event()
         Thread(target=server.serve_forever, daemon=True).start()
         process, hwnd = start(exe, data)
         try:
             navigate(hwnd, base + "/first")
             wait_for(lambda: history_has(database, base + "/first", "Streamify first"),
                      "The first page did not load through the address bar")
+            assert server.reduced_motion.wait(5), "The WebView2 document did not request reduced motion"
             assert post(hwnd, 0x0201, 1, 195 | (50 << 16))  # WM_LBUTTONDOWN on the new tab button
             wait_for(lambda: not address(hwnd), "The new tab did not open")
             navigate(hwnd, base + "/second")
@@ -269,14 +287,4 @@ def main(exe):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("exe", type=Path)
-    parser.add_argument("--spotify-only", action="store_true")
-    parser.add_argument("--label", default="Current executable")
-    args = parser.parse_args()
-    exe = str(args.exe.resolve(strict=True))
-    if args.spotify_only:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
-            check_public_sites(exe, Path(directory), args.label, spotify_only=True)
-    else:
-        main(exe)
+    main(str(Path(sys.argv[1]).resolve(strict=True)))
