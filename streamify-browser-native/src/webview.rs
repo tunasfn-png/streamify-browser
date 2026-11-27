@@ -5,8 +5,9 @@ use webview2_com::{
     take_pwstr, AcceleratorKeyPressedEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler, HistoryChangedEventHandler,
-    Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler, SourceChangedEventHandler,
+    LaunchingExternalUriSchemeEventHandler, Microsoft::Web::WebView2::Win32::*,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    NewWindowRequestedEventHandler, SourceChangedEventHandler,
 };
 use windows::core::*;
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, RECT, WPARAM};
@@ -73,6 +74,18 @@ pub fn configure(
         }
 
         let mut token = 0;
+        if let Ok(view_with_external_scheme) = view.cast::<ICoreWebView2_18>() {
+            view_with_external_scheme.add_LaunchingExternalUriScheme(
+                &LaunchingExternalUriSchemeEventHandler::create(Box::new(|_, args| {
+                    if let Some(args) = args {
+                        args.SetCancel(true)?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+
         view.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(|_, args| {
                 if let Some(args) = args {
@@ -221,4 +234,23 @@ pub fn history_buttons(controller: &ICoreWebView2Controller) -> (bool, bool) {
         }
     }
     (back.as_bool(), forward.as_bool())
+}
+
+/// Low memory mode leaves scripts and audio active while the controller is hidden.
+pub fn set_visible(controller: &ICoreWebView2Controller, visible: bool) -> Result<()> {
+    unsafe {
+        controller.SetIsVisible(visible)?;
+        if let Ok(view) = controller
+            .CoreWebView2()
+            .and_then(|view| view.cast::<ICoreWebView2_19>())
+        {
+            let level = if visible {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+            } else {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+            };
+            let _ = view.SetMemoryUsageTargetLevel(level);
+        }
+    }
+    Ok(())
 }

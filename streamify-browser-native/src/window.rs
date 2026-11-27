@@ -264,7 +264,7 @@ fn activate_view(hwnd: HWND) {
     if let Some(controller) = parked {
         webview::resize_controller(&controller, hwnd);
         unsafe {
-            let _ = controller.SetIsVisible(!IsIconic(hwnd).as_bool());
+            let _ = webview::set_visible(&controller, !IsIconic(hwnd).as_bool());
         }
         refresh_history_buttons(hwnd, &controller);
     }
@@ -308,10 +308,17 @@ fn controller_ready(
     let ready = live.and_then(|live| {
         webview::configure(&live.controller, hwnd, generation)?;
         unsafe {
-            live.controller.SetIsVisible(!IsIconic(hwnd).as_bool())?;
+            webview::set_visible(&live.controller, !IsIconic(hwnd).as_bool())?;
         }
         Ok(live)
     });
+    if !with_app(hwnd, |data| {
+        data.active.is_none() && data.tabs.active_id() == Some(id)
+    })
+    .unwrap_or(false)
+    {
+        return;
+    }
     match ready {
         Ok(live) => {
             let controller = live.controller.clone();
@@ -361,7 +368,7 @@ fn release_active(hwnd: HWND, keep_spotify: bool) {
         false
     })
     .unwrap_or(false);
-    if keep && unsafe { live.controller.SetIsVisible(false) }.is_ok() {
+    if keep && webview::set_visible(&live.controller, false).is_ok() {
         let old = with_app(hwnd, |data| data.spotify.replace(live)).flatten();
         drop(old);
     }
@@ -640,7 +647,7 @@ unsafe extern "system" fn wnd_proc(
             }
             if let Some(controller) = active_controller(hwnd) {
                 let minimized = wparam.0 == SIZE_MINIMIZED as usize;
-                let _ = controller.SetIsVisible(!minimized);
+                let _ = webview::set_visible(&controller, !minimized);
                 if !minimized {
                     webview::resize_controller(&controller, hwnd);
                 }

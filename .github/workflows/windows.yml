@@ -2,7 +2,7 @@ name: Windows x64
 
 on:
   push:
-    branches: [main, codex/streamify-windows-x64]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -33,6 +33,8 @@ jobs:
         run: cargo +1.100.0 test --locked --target $env:RUST_TARGET
       - name: Build the release executable
         run: cargo +1.100.0 build --locked --release --target $env:RUST_TARGET
+      - name: Verify the Windows executable with WebView2
+        run: python ../.github/scripts/windows-smoke.py target/$env:RUST_TARGET/release/streamify-browser.exe
       - name: Upload Windows x64 executable
         uses: actions/upload-artifact@v7
         with:
