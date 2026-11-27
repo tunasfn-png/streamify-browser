@@ -264,12 +264,9 @@ fn activate_view(hwnd: HWND) {
     if let Some(controller) = parked {
         webview::resize_controller(&controller, hwnd);
         unsafe {
-            let _ = webview::set_visible(
-                &controller,
-                !IsIconic(hwnd).as_bool(),
-                GetForegroundWindow() == hwnd,
-            );
+            let _ = webview::set_visible(&controller, !IsIconic(hwnd).as_bool());
         }
+        update_active_memory(hwnd, window_has_focus(hwnd));
         refresh_history_buttons(hwnd, &controller);
     }
     if let Some((env, generation)) = create {
@@ -312,11 +309,7 @@ fn controller_ready(
     let ready = live.and_then(|live| {
         webview::configure(&live.controller, hwnd, generation)?;
         unsafe {
-            webview::set_visible(
-                &live.controller,
-                !IsIconic(hwnd).as_bool(),
-                GetForegroundWindow() == hwnd,
-            )?;
+            webview::set_visible(&live.controller, !IsIconic(hwnd).as_bool())?;
         }
         Ok(live)
     });
@@ -337,6 +330,7 @@ fn controller_ready(
             })
             .flatten()
             {
+                update_active_memory(hwnd, window_has_focus(hwnd));
                 if let Err(error) = webview::navigate(&controller, &url) {
                     with_app(hwnd, |data| data.active.take());
                     show_error(hwnd, "No se pudo abrir la pestaña", error);
@@ -352,6 +346,22 @@ fn active_controller(hwnd: HWND) -> Option<ICoreWebView2Controller> {
         data.active.as_ref().map(|live| live.controller.clone())
     })
     .flatten()
+}
+
+fn window_has_focus(hwnd: HWND) -> bool {
+    unsafe { GetForegroundWindow() == hwnd && !IsIconic(hwnd).as_bool() }
+}
+
+fn update_active_memory(hwnd: HWND, foreground: bool) {
+    let active = with_app(hwnd, |data| {
+        let live = data.active.as_ref()?;
+        let tab = data.tabs.get_tab(live.tab)?;
+        Some((live.controller.clone(), url_util::is_spotify(&tab.url)))
+    })
+    .flatten();
+    if let Some((controller, spotify)) = active {
+        webview::set_memory_target(&controller, foreground && !spotify);
+    }
 }
 
 fn release_active(hwnd: HWND, keep_spotify: bool) {
@@ -376,7 +386,8 @@ fn release_active(hwnd: HWND, keep_spotify: bool) {
         false
     })
     .unwrap_or(false);
-    if keep && webview::set_visible(&live.controller, false, false).is_ok() {
+    if keep && webview::set_visible(&live.controller, false).is_ok() {
+        webview::set_memory_target(&live.controller, false);
         let old = with_app(hwnd, |data| data.spotify.replace(live)).flatten();
         drop(old);
     }
@@ -511,6 +522,7 @@ fn webview_event(hwnd: HWND, event: u32, generation: usize, success: bool) {
         refresh_history_buttons(hwnd, &controller);
     }
     if active && (event == WM_WEBVIEW_SOURCE_CHANGED || event == WM_WEBVIEW_NAV_COMPLETE) {
+        update_active_memory(hwnd, window_has_focus(hwnd));
         refresh_address(hwnd);
     }
     if event == WM_WEBVIEW_TITLE_CHANGED {
@@ -528,6 +540,7 @@ fn navigate(hwnd: HWND, url: &str) {
         }
     });
     if let Some(controller) = active_controller(hwnd) {
+        update_active_memory(hwnd, window_has_focus(hwnd));
         if let Err(error) = webview::navigate(&controller, url) {
             show_error(hwnd, "No se pudo navegar a la dirección", error);
         }
@@ -655,8 +668,8 @@ unsafe extern "system" fn wnd_proc(
             }
             if let Some(controller) = active_controller(hwnd) {
                 let minimized = wparam.0 == SIZE_MINIMIZED as usize;
-                let _ =
-                    webview::set_visible(&controller, !minimized, GetForegroundWindow() == hwnd);
+                let _ = webview::set_visible(&controller, !minimized);
+                update_active_memory(hwnd, !minimized && window_has_focus(hwnd));
                 if !minimized {
                     webview::resize_controller(&controller, hwnd);
                 }
@@ -664,10 +677,8 @@ unsafe extern "system" fn wnd_proc(
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
         WM_ACTIVATE => {
-            if let Some(controller) = active_controller(hwnd) {
-                let foreground = wparam.0 as u16 != WA_INACTIVE as u16 && !IsIconic(hwnd).as_bool();
-                webview::set_memory_target(&controller, foreground);
-            }
+            let foreground = wparam.0 as u16 != WA_INACTIVE as u16 && !IsIconic(hwnd).as_bool();
+            update_active_memory(hwnd, foreground);
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         WM_MOVE => {

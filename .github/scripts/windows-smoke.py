@@ -1,5 +1,6 @@
 """Exercise the shipped Windows executable with an isolated profile and a local page."""
 
+import argparse
 import ctypes
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -7,8 +8,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+from statistics import median
 import subprocess
-import sys
 import tempfile
 from threading import Thread
 import time
@@ -28,6 +29,8 @@ find_window = win32("FindWindowW", wintypes.HWND, wintypes.LPCWSTR, wintypes.LPC
 get_item = win32("GetDlgItem", wintypes.HWND, wintypes.HWND, ctypes.c_int)
 is_minimized = win32("IsIconic", wintypes.BOOL, wintypes.HWND)
 show_window = win32("ShowWindowAsync", wintypes.BOOL, wintypes.HWND, ctypes.c_int)
+foreground_window = win32("GetForegroundWindow", wintypes.HWND)
+set_foreground_window = win32("SetForegroundWindow", wintypes.BOOL, wintypes.HWND)
 window_pid = win32(
     "GetWindowThreadProcessId", wintypes.DWORD, wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
 )
@@ -127,7 +130,7 @@ do {{
 $gpuDisabled = [bool]($all | Where-Object {{ $ids.Contains($_.ProcessId) -and
     $_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -match '(?:^|\s)--disable-gpu(?:\s|$)' }})
 $stats = @(Get-CimInstance Win32_PerfRawData_PerfProc_Process | Where-Object {{ $ids.Contains($_.IDProcess) }} |
-    ForEach-Object {{ @{{ pid = $_.IDProcess; ram = $_.WorkingSetPrivate; cpu = $_.PercentProcessorTime }} }})
+    ForEach-Object {{ @{{ pid = $_.IDProcess; ram = $_.WorkingSetPrivate; commit = $_.PrivateBytes; cpu = $_.PercentProcessorTime }} }})
 @{{ gpuDisabled = $gpuDisabled; stats = $stats }} | ConvertTo-Json -Depth 4 -Compress
 """
     result = subprocess.run(
@@ -169,17 +172,44 @@ def successful_site_navigation(database, prefix):
         ).fetchone()
 
 
-def check_public_sites(exe, data):
+def measure_spotify(process, hwnd, database, label):
+    set_foreground_window(hwnd)
+    navigate(hwnd, "https://open.spotify.com/")
+    started = time.monotonic()
+    snapshots = []
+    for offset in (1, 3, 5, 8, 12, 18, 24, 30, 36, 42):
+        time.sleep(max(0, started + offset - time.monotonic()))
+        snapshot = collect_processes(process.pid)
+        if snapshot["gpuDisabled"]:
+            snapshots.append((time.monotonic() - started, foreground_window() == hwnd, snapshot["stats"]))
+    loaded = successful_site_navigation(database, "https://open.spotify.com/") is not None
+    if not loaded or len(snapshots) < 4:
+        report(f"{label} | Spotify single-tab measurement unavailable")
+        return loaded
+
+    idle = snapshots[-5:]
+    ram = [sum(row["ram"] for row in stats) / 1024**2 for _, _, stats in snapshots]
+    committed = [sum(row["commit"] for row in stats) / 1024**2 for _, _, stats in idle]
+    cpu_start = {row["pid"]: row["cpu"] for row in idle[0][2]}
+    cpu = sum(max(0, row["cpu"] - cpu_start.get(row["pid"], 0)) for row in idle[-1][2])
+    duration = idle[-1][0] - idle[0][0]
+    cpu_percent = cpu / 1e7 / duration / (os.cpu_count() or 1) * 100
+    focused = sum(has_focus for _, has_focus, _ in snapshots)
+    report(f"{label} | Spotify only, signed out | {max(ram):.1f} MiB sampled peak, "
+           f"{median(ram[-5:]):.1f} MiB median idle private working set, "
+           f"{median(committed):.1f} MiB median private commit, {cpu_percent:.3f}% idle CPU "
+           f"({duration:.1f}s idle sample, foreground in {focused}/{len(snapshots)} snapshots)")
+    return loaded
+
+
+def check_public_sites(exe, data, label="Current executable", spotify_only=False):
     database = data / "Streamify Browser" / "streamify_browser.db"
     process, hwnd = start(exe, data)
     try:
-        navigate(hwnd, "https://open.spotify.com/")
-        spotify_loaded = True
-        try:
-            wait_for(lambda: successful_site_navigation(database, "https://open.spotify.com/"),
-                     "Spotify public page did not load", timeout=30)
-        except TimeoutError:
-            spotify_loaded = False
+        spotify_loaded = measure_spotify(process, hwnd, database, label)
+        if spotify_only:
+            close(process, hwnd)
+            return
         report(f"Spotify public page | {'loaded' if spotify_loaded else 'unverified in the runner'}")
         assert post(hwnd, 0x0201, 1, 195 | (50 << 16))
         wait_for(lambda: not address(hwnd), "Twitch tab did not open")
@@ -239,4 +269,14 @@ def main(exe):
 
 
 if __name__ == "__main__":
-    main(str(Path(sys.argv[1]).resolve(strict=True)))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("exe", type=Path)
+    parser.add_argument("--spotify-only", action="store_true")
+    parser.add_argument("--label", default="Current executable")
+    args = parser.parse_args()
+    exe = str(args.exe.resolve(strict=True))
+    if args.spotify_only:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            check_public_sites(exe, Path(directory), args.label, spotify_only=True)
+    else:
+        main(exe)

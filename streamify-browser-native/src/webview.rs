@@ -28,7 +28,8 @@ pub fn create_environment(
             Ok(())
         }));
     unsafe {
-        options.SetAdditionalBrowserArguments(w!("--disable-gpu"))?;
+        options
+            .SetAdditionalBrowserArguments(w!("--disable-gpu --force-prefers-reduced-motion"))?;
         CreateCoreWebView2EnvironmentWithOptions(
             PCWSTR::null(),
             PCWSTR(profile.as_ptr()),
@@ -236,31 +237,26 @@ pub fn history_buttons(controller: &ICoreWebView2Controller) -> (bool, bool) {
     (back.as_bool(), forward.as_bool())
 }
 
-/// Low memory mode leaves scripts and audio active in an inactive controller.
-pub fn set_memory_target(controller: &ICoreWebView2Controller, foreground: bool) {
+/// A low memory target keeps the document active while WebView2 reduces its working set.
+pub fn set_memory_target(controller: &ICoreWebView2Controller, normal: bool) {
     unsafe {
         if let Ok(view) = controller
             .CoreWebView2()
             .and_then(|view| view.cast::<ICoreWebView2_19>())
         {
-            let level = if foreground {
+            let level = if normal {
                 COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
             } else {
                 COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
             };
-            let _ = view.SetMemoryUsageTargetLevel(level);
+            let mut current = COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL::default();
+            if view.MemoryUsageTargetLevel(&mut current).is_err() || current != level {
+                let _ = view.SetMemoryUsageTargetLevel(level);
+            }
         }
     }
 }
 
-pub fn set_visible(
-    controller: &ICoreWebView2Controller,
-    visible: bool,
-    foreground: bool,
-) -> Result<()> {
-    unsafe {
-        controller.SetIsVisible(visible)?;
-    }
-    set_memory_target(controller, visible && foreground);
-    Ok(())
+pub fn set_visible(controller: &ICoreWebView2Controller, visible: bool) -> Result<()> {
+    unsafe { controller.SetIsVisible(visible) }
 }
