@@ -1,6 +1,6 @@
 # Streamify Browser v0.2.0
 
-La ventana, barra de direcciones y pestañas usan Rust, Win32 y GDI. El contenido web usa Microsoft Edge WebView2 con `--disable-gpu`. WebView2 y SQLite se enlazan mediante `webview2-com` y `rusqlite` con SQLite integrado. El programa no requiere herramientas de desarrollo en el equipo donde se ejecuta.
+La ventana, barra de direcciones y pestañas usan Rust, Win32 y GDI. El contenido web usa Microsoft Edge WebView2 con `--disable-gpu`. WebView2 y SQLite se enlazan mediante `webview2-com` y `rusqlite` con SQLite integrado. El ejecutable enlaza la biblioteca de C estáticamente y utiliza el WebView2 Runtime de Windows 11.
 
 ## Pestañas y datos
 

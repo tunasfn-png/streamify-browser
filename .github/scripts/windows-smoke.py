@@ -135,6 +135,13 @@ $stats = @(Get-CimInstance Win32_PerfRawData_PerfProc_Process | Where-Object {{ 
     return json.loads(result.stdout)
 
 
+def report(message):
+    print(message, flush=True)
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary, "a", encoding="utf-8") as output:
+            output.write(f"- {message}\n")
+
+
 def measure_idle(root, label):
     time.sleep(8)
     before = collect_processes(root)
@@ -148,9 +155,47 @@ def measure_idle(root, label):
     total_cpu = sum(
         max(0, row["cpu"] - previous.get(row["pid"], 0)) for row in after["stats"]
     )
-    print(f"{label}: {total_ram / 1024**2:.1f} MiB private working set, "
-          f"{total_cpu / 1e7 / elapsed / (os.cpu_count() or 1) * 100:.3f}% CPU "
-          f"({len(after['stats'])} processes; {elapsed:.1f}s sample)", flush=True)
+    report(f"{label} | {total_ram / 1024**2:.1f} MiB private working set, "
+           f"{total_cpu / 1e7 / elapsed / (os.cpu_count() or 1) * 100:.3f}% CPU "
+           f"({len(after['stats'])} processes, {elapsed:.1f}s sample)")
+
+
+def successful_site_navigation(database, prefix):
+    with sqlite3.connect(database) as conn:
+        return conn.execute(
+            "SELECT 1 FROM history WHERE url LIKE ? AND title <> ''", (prefix + "%",)
+        ).fetchone()
+
+
+def check_public_sites(exe, data):
+    database = data / "Streamify Browser" / "streamify_browser.db"
+    process, hwnd = start(exe, data)
+    try:
+        navigate(hwnd, "https://open.spotify.com/")
+        spotify_loaded = True
+        try:
+            wait_for(lambda: successful_site_navigation(database, "https://open.spotify.com/"),
+                     "Spotify public page did not load", timeout=30)
+        except TimeoutError:
+            spotify_loaded = False
+        report(f"Spotify public page | {'loaded' if spotify_loaded else 'unverified in the runner'}")
+        assert post(hwnd, 0x0201, 1, 195 | (50 << 16))
+        wait_for(lambda: not address(hwnd), "Twitch tab did not open")
+        navigate(hwnd, "twitch:monstercat")
+        twitch_loaded = True
+        try:
+            wait_for(lambda: successful_site_navigation(database, "https://www.twitch.tv/popout/monstercat/chat"),
+                     "Twitch public chat page did not load", timeout=30)
+        except TimeoutError:
+            twitch_loaded = False
+        report(f"Twitch public chat | {'loaded' if twitch_loaded else 'unverified in the runner'}")
+        if spotify_loaded and twitch_loaded:
+            measure_idle(process.pid, "Public pages with Twitch foreground and Spotify background, signed out")
+        close(process, hwnd)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
 
 
 def main(exe):
@@ -177,12 +222,13 @@ def main(exe):
             assert post(hwnd, 0x0201, 1, 60 | (50 << 16))  # Click the first tab
             wait_for(lambda: address(hwnd) == base + "/first", "The first tab was not selectable")
             close(process, hwnd)
-            print("Verified startup, address bar, navigation, tab switching, session restore and clean shutdown.")
+            report("Verified startup, address bar, navigation, tab switching, session restore and clean shutdown.")
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
             server.shutdown()
+        check_public_sites(exe, data / "sites")
 
 
 if __name__ == "__main__":
