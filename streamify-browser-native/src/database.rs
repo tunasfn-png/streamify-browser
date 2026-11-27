@@ -1,38 +1,21 @@
 // Streamify Browser v0.2.0 – SQLite database layer
 // Ported from v0.1.3 database.rs. Schema: history, bookmarks, sessions, settings.
-// SQLite pragmas: WAL, NORMAL sync, 2000 cache, MEMORY temp_store.
+// SQLite pragmas: WAL, NORMAL sync, 512 KiB page cache, MEMORY temp_store.
 
-use rusqlite::{params, Connection, Result as SqlResult};
-use serde::{Deserialize, Serialize};
+use rusqlite::{
+    params, Connection, OptionalExtension, Result as SqlResult, Transaction, TransactionBehavior,
+};
 use std::path::Path;
-use std::sync::Mutex;
 
 use crate::constants::MAX_SESSIONS;
 
-// ── Data types ─────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryEntry {
-    pub id: i64,
-    pub url: String,
-    pub title: String,
-    pub visited_at: String,
-    pub visit_count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bookmark {
-    pub id: i64,
     pub url: String,
     pub title: String,
-    pub folder: String,
-    pub created_at: String,
 }
-
-// ── Database wrapper ───────────────────────────────────────────────
 
 pub struct Database {
-    conn: Mutex<Connection>,
+    conn: Connection,
 }
 
 impl Database {
@@ -44,7 +27,7 @@ impl Database {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
-             PRAGMA cache_size = 2000;
+             PRAGMA cache_size = -512;
              PRAGMA temp_store = MEMORY;
              PRAGMA foreign_keys = ON;",
         )?;
@@ -83,25 +66,23 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_bookmarks_url ON bookmarks(url);",
         )?;
 
-        Ok(Database {
-            conn: Mutex::new(conn),
-        })
+        Ok(Database { conn })
     }
 
     // ── History ────────────────────────────────────────────────────
 
     /// Adds a URL to history. If the URL exists, increments visit_count and updates timestamp.
     pub fn add_history(&self, url: &str, title: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
 
         // Check if URL already exists
         let existing: Option<i64> = conn
             .query_row(
-                "SELECT id FROM history WHERE url = ?1",
+                "SELECT id FROM history WHERE url = ?1 ORDER BY id LIMIT 1",
                 params![url],
                 |row| row.get(0),
             )
-            .ok();
+            .optional()?;
 
         if let Some(id) = existing {
             conn.execute(
@@ -115,67 +96,14 @@ impl Database {
                 params![url, title],
             )?;
         }
-        Ok(())
-    }
-
-    /// Returns recent history entries, most recent first.
-    pub fn get_history(&self, limit: usize) -> SqlResult<Vec<HistoryEntry>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, url, title, visited_at, visit_count
-             FROM history ORDER BY visited_at DESC LIMIT ?1",
-        )?;
-        let entries = stmt
-            .query_map(params![limit as i64], |row| {
-                Ok(HistoryEntry {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    title: row.get(2)?,
-                    visited_at: row.get(3)?,
-                    visit_count: row.get(4)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(entries)
-    }
-
-    /// Searches history by URL or title substring.
-    pub fn search_history(&self, query: &str, limit: usize) -> SqlResult<Vec<HistoryEntry>> {
-        let conn = self.conn.lock().unwrap();
-        let pattern = format!("%{}%", query);
-        let mut stmt = conn.prepare(
-            "SELECT id, url, title, visited_at, visit_count
-             FROM history WHERE url LIKE ?1 OR title LIKE ?1
-             ORDER BY visited_at DESC LIMIT ?2",
-        )?;
-        let entries = stmt
-            .query_map(params![pattern, limit as i64], |row| {
-                Ok(HistoryEntry {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    title: row.get(2)?,
-                    visited_at: row.get(3)?,
-                    visit_count: row.get(4)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(entries)
-    }
-
-    /// Clears all history.
-    pub fn clear_history(&self) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM history", [])?;
-        Ok(())
+        conn.commit()
     }
 
     // ── Bookmarks ──────────────────────────────────────────────────
 
     /// Adds a bookmark.
     pub fn add_bookmark(&self, url: &str, title: &str, folder: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = &self.conn;
         conn.execute(
             "INSERT INTO bookmarks (url, title, folder) VALUES (?1, ?2, ?3)",
             params![url, title, folder],
@@ -185,36 +113,27 @@ impl Database {
 
     /// Removes a bookmark by URL.
     pub fn remove_bookmark(&self, url: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = &self.conn;
         conn.execute("DELETE FROM bookmarks WHERE url = ?1", params![url])?;
         Ok(())
     }
 
-    /// Returns all bookmarks.
-    pub fn get_bookmarks(&self) -> SqlResult<Vec<Bookmark>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, url, title, folder, created_at
-             FROM bookmarks ORDER BY created_at DESC",
-        )?;
-        let entries = stmt
-            .query_map([], |row| {
-                Ok(Bookmark {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    title: row.get(2)?,
-                    folder: row.get(3)?,
-                    created_at: row.get(4)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(entries)
+    pub fn get_bookmarks(&self, limit: u32) -> SqlResult<Vec<Bookmark>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT url, title FROM bookmarks ORDER BY id DESC LIMIT ?1")?;
+        let entries = stmt.query_map([limit], |row| {
+            Ok(Bookmark {
+                url: row.get(0)?,
+                title: row.get(1)?,
+            })
+        })?;
+        entries.collect()
     }
 
     /// Checks if a URL is bookmarked.
     pub fn is_bookmarked(&self, url: &str) -> bool {
-        let conn = self.conn.lock().unwrap();
+        let conn = &self.conn;
         conn.query_row(
             "SELECT COUNT(*) FROM bookmarks WHERE url = ?1",
             params![url],
@@ -228,55 +147,45 @@ impl Database {
 
     /// Saves session data as JSON. Keeps only the last MAX_SESSIONS entries.
     pub fn save_session(&self, json_data: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO sessions (data) VALUES (?1)",
-            params![json_data],
-        )?;
-
-        // Keep only the last N sessions
+        let conn = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        conn.execute("INSERT INTO sessions (data) VALUES (?1)", [json_data])?;
         conn.execute(
             "DELETE FROM sessions WHERE id NOT IN
-             (SELECT id FROM sessions ORDER BY saved_at DESC LIMIT ?1)",
-            params![MAX_SESSIONS as i64],
+             (SELECT id FROM sessions ORDER BY id DESC LIMIT ?1)",
+            [MAX_SESSIONS as i64],
         )?;
-        Ok(())
+        conn.commit()
     }
 
-    /// Returns the most recent session JSON, if any.
     pub fn get_last_session(&self) -> SqlResult<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-        let result = conn
+        self.conn
             .query_row(
-                "SELECT data FROM sessions ORDER BY saved_at DESC LIMIT 1",
+                "SELECT data FROM sessions ORDER BY id DESC LIMIT 1",
                 [],
-                |row| row.get::<_, String>(0),
+                |row| row.get(0),
             )
-            .ok();
-        Ok(result)
+            .optional()
     }
+}
 
-    // ── Settings ───────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Gets a setting value by key.
-    pub fn get_setting(&self, key: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![key],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
-    }
-
-    /// Sets a setting value (upsert).
-    pub fn set_setting(&self, key: &str, value: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )?;
-        Ok(())
+    #[test]
+    fn newest_session_wins_when_timestamps_match() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        for value in 0..=MAX_SESSIONS {
+            db.save_session(&value.to_string()).unwrap();
+        }
+        assert_eq!(
+            db.get_last_session().unwrap(),
+            Some(MAX_SESSIONS.to_string())
+        );
+        let count: usize = db
+            .conn
+            .query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, MAX_SESSIONS);
     }
 }

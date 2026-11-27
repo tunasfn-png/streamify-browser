@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::constants::{BLANK_TAB_TITLE, BLANK_URL};
+use crate::url_util;
 
 // ── Tab data ───────────────────────────────────────────────────────
 
@@ -25,7 +26,6 @@ pub struct TabInfo {
     pub url: String,
     pub title: String,
     pub is_active: bool,
-    pub is_loading: bool,
 }
 
 impl TabInfo {
@@ -36,7 +36,6 @@ impl TabInfo {
             url: BLANK_URL.to_string(),
             title: BLANK_TAB_TITLE.to_string(),
             is_active: false,
-            is_loading: false,
         }
     }
 
@@ -47,7 +46,6 @@ impl TabInfo {
             url: url.to_string(),
             title: String::new(),
             is_active: false,
-            is_loading: false,
         }
     }
 }
@@ -57,7 +55,8 @@ impl TabInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
     pub tabs: Vec<SessionTab>,
-    pub active_tab_id: Option<TabId>,
+    #[serde(default)]
+    pub active_tab_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,27 +165,6 @@ impl TabState {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
 
-    /// Updates the URL of a specific tab.
-    pub fn set_tab_url(&mut self, id: TabId, url: &str) {
-        if let Some(tab) = self.get_tab_mut(id) {
-            tab.url = url.to_string();
-        }
-    }
-
-    /// Updates the title of a specific tab.
-    pub fn set_tab_title(&mut self, id: TabId, title: &str) {
-        if let Some(tab) = self.get_tab_mut(id) {
-            tab.title = title.to_string();
-        }
-    }
-
-    /// Sets loading state for a tab.
-    pub fn set_tab_loading(&mut self, id: TabId, loading: bool) {
-        if let Some(tab) = self.get_tab_mut(id) {
-            tab.is_loading = loading;
-        }
-    }
-
     /// Builds session data for persistence.
     pub fn get_session_data(&self) -> SessionData {
         SessionData {
@@ -198,50 +176,62 @@ impl TabState {
                     title: t.title.clone(),
                 })
                 .collect(),
-            active_tab_id: self.active_id,
+            active_tab_index: self
+                .active_id
+                .and_then(|id| self.tabs.iter().position(|tab| tab.id == id)),
         }
     }
 
-    /// Restores tabs from session data. Returns the list of tab IDs created.
-    pub fn restore_session(&mut self, data: &SessionData) -> Vec<TabId> {
-        let mut ids = Vec::new();
-        for st in &data.tabs {
-            let mut tab = if st.url.is_empty() || st.url == BLANK_URL {
-                TabInfo::new_blank()
+    pub fn restore_session(&mut self, data: &SessionData) {
+        self.tabs.clear();
+        self.active_id = None;
+        self.tabs.extend(data.tabs.iter().map(|saved| {
+            if url_util::is_http(&saved.url) {
+                let mut tab = TabInfo::new_with_url(&saved.url);
+                tab.title.clone_from(&saved.title);
+                tab
             } else {
-                TabInfo::new_with_url(&st.url)
-            };
-            tab.title = st.title.clone();
-            tab.is_active = false;
-            let id = tab.id;
-            self.tabs.push(tab);
-            ids.push(id);
-        }
-
-        // Try to activate the previously active tab (by index match)
-        if let Some(active_id) = data.active_tab_id {
-            // Find position in original session
-            if let Some(pos) = data.tabs.iter().position(|_| true) {
-                // The original active_tab_id won't match new IDs, so activate by position
-                // Find which new tab corresponds to the same position
-                let _ = active_id; // original ID, unused
-                if pos < ids.len() {
-                    self.set_active(ids[pos]);
-                }
+                TabInfo::new_blank()
             }
+        }));
+        if let Some(tab) = self
+            .tabs
+            .get(data.active_tab_index.unwrap_or(0))
+            .or_else(|| self.tabs.first())
+        {
+            self.set_active(tab.id);
         }
+    }
+}
 
-        // If nothing was activated, activate the last tab
-        if self.active_id.is_none() && !ids.is_empty() {
-            let last_id = *ids.last().unwrap();
-            self.set_active(last_id);
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        ids
+    #[test]
+    fn restores_the_selected_tab_with_new_ids() {
+        let mut original = TabState::new();
+        original.add_tab(TabInfo::new_with_url("https://open.spotify.com/"));
+        let old_id = original.add_tab(TabInfo::new_with_url(
+            "https://www.twitch.tv/popout/channel/chat",
+        ));
+        let mut restored = TabState::new();
+        restored.restore_session(&original.get_session_data());
+        assert_ne!(restored.active_id(), Some(old_id));
+        assert_eq!(
+            restored.active_tab().unwrap().url,
+            "https://www.twitch.tv/popout/channel/chat"
+        );
     }
 
-    /// Returns the index of a tab by ID.
-    pub fn tab_index(&self, id: TabId) -> Option<usize> {
-        self.tabs.iter().position(|t| t.id == id)
+    #[test]
+    fn reads_legacy_sessions_and_rejects_non_web_urls() {
+        let session: SessionData = serde_json::from_str(
+            r#"{"tabs":[{"url":"file:///private","title":"Local"}],"active_tab_id":24}"#,
+        )
+        .unwrap();
+        let mut restored = TabState::new();
+        restored.restore_session(&session);
+        assert_eq!(restored.active_tab().unwrap().url, BLANK_URL);
     }
 }

@@ -15,13 +15,23 @@ pub fn normalize_url(input: &str) -> String {
         return String::new();
     }
 
-    // Already has a scheme
-    if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-        // Validate it parses as a URL
-        if url::Url::parse(trimmed).is_ok() {
-            return trimmed.to_string();
+    if let Some(channel) = trimmed.strip_prefix("twitch:") {
+        if !channel.is_empty()
+            && channel.len() <= 25
+            && channel
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return format!(
+                "https://www.twitch.tv/popout/{}/chat",
+                channel.to_ascii_lowercase()
+            );
         }
-        // If it doesn't parse, fall through to search
+    }
+
+    // Already has a scheme
+    if is_http(trimmed) {
+        return trimmed.to_owned();
     }
 
     // about:blank is allowed
@@ -35,18 +45,19 @@ pub fn normalize_url(input: &str) -> String {
     }
 
     // localhost with optional port
-    if trimmed.starts_with("localhost") {
-        let rest = &trimmed["localhost".len()..];
+    if let Some(rest) = trimmed.strip_prefix("localhost") {
         if rest.is_empty() || rest.starts_with(':') || rest.starts_with('/') {
-            return format!("http://{}", trimmed);
+            let url = format!("http://{trimmed}");
+            if is_http(&url) {
+                return url;
+            }
         }
     }
 
     // Check if it looks like a domain: has a dot, no spaces, reasonably formatted
-    if !trimmed.contains(' ') && trimmed.contains('.') {
+    if !trimmed.contains(char::is_whitespace) && trimmed.contains('.') {
         // Basic domain-like check: at least one dot with text on both sides
-        let parts: Vec<&str> = trimmed.splitn(2, '/').collect();
-        let host_part = parts[0];
+        let host_part = trimmed.split('/').next().unwrap_or(trimmed);
         if let Some(dot_pos) = host_part.rfind('.') {
             let after_dot = &host_part[dot_pos + 1..];
             let before_dot = &host_part[..dot_pos];
@@ -55,7 +66,10 @@ pub fn normalize_url(input: &str) -> String {
                 // Strip optional port for validation
                 let tld = after_dot.split(':').next().unwrap_or(after_dot);
                 if tld.chars().all(|c| c.is_ascii_alphanumeric()) {
-                    return format!("https://{}", trimmed);
+                    let url = format!("https://{trimmed}");
+                    if is_http(&url) {
+                        return url;
+                    }
                 }
             }
         }
@@ -72,20 +86,26 @@ pub fn is_blank(url: &str) -> bool {
 
 /// Returns true if the URL scheme is HTTP or HTTPS.
 pub fn is_http(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://")
+    if !url
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        && !url
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        return false;
+    }
+    url::Url::parse(url).is_ok_and(|parsed| parsed.has_host())
 }
 
-/// Extracts a display-friendly version of the URL.
-/// Removes "https://" prefix and trailing "/" for display.
-pub fn display_url(url: &str) -> String {
-    if url == "about:blank" {
-        return String::new();
-    }
-    let s = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    s.strip_suffix('/').unwrap_or(s).to_string()
+pub fn is_navigable(url: &str) -> bool {
+    url == "about:blank" || is_http(url)
+}
+
+pub fn is_spotify(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| {
+        parsed.scheme() == "https" && parsed.host_str() == Some("open.spotify.com")
+    })
 }
 
 #[cfg(test)]
@@ -94,10 +114,7 @@ mod tests {
 
     #[test]
     fn test_full_url_passthrough() {
-        assert_eq!(
-            normalize_url("https://example.com"),
-            "https://example.com"
-        );
+        assert_eq!(normalize_url("https://example.com"), "https://example.com");
         assert_eq!(
             normalize_url("http://localhost:3000"),
             "http://localhost:3000"
@@ -146,8 +163,14 @@ mod tests {
     }
 
     #[test]
-    fn test_display_url() {
-        assert_eq!(display_url("https://example.com/"), "example.com");
-        assert_eq!(display_url("about:blank"), "");
+    fn expands_twitch_chat_and_validates_web_navigation() {
+        assert_eq!(
+            normalize_url("twitch:Some_Channel"),
+            "https://www.twitch.tv/popout/some_channel/chat"
+        );
+        assert!(is_navigable("HTTPS://example.org/"));
+        assert!(!is_navigable("file:///private"));
+        assert!(!is_spotify("https://open.spotify.com.example.org/"));
+        assert!(is_spotify("https://open.spotify.com/collection/tracks"));
     }
 }

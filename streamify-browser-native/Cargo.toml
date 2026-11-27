@@ -2,7 +2,7 @@
 name = "streamify-browser"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.100"
 description = "Streamify Browser – native Win32 + WebView2 browser"
 license = "MIT"
 
@@ -30,10 +30,8 @@ features = [
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
-    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_System_Variant",
-    "Win32_System_WinRT",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
@@ -48,5 +46,5 @@ version = "0.62"
 panic = "abort"
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = 2
 strip = true

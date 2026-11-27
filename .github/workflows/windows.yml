@@ -28,11 +28,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.96.0 --profile minimal --target $env:RUST_TARGET
+        run: rustup toolchain install 1.100.0 --profile minimal --target $env:RUST_TARGET
       - name: Run tests
-        run: cargo +1.96.0 test --target $env:RUST_TARGET
+        run: cargo +1.100.0 test --locked --target $env:RUST_TARGET
       - name: Build the release executable
-        run: cargo +1.96.0 build --release --target $env:RUST_TARGET
+        run: cargo +1.100.0 build --locked --release --target $env:RUST_TARGET
       - name: Upload Windows x64 executable
         uses: actions/upload-artifact@v7
         with:

@@ -1,67 +1,84 @@
-// Streamify Browser v0.2.0 – Native Win32 + WebView2
-// Entry point: COM init (STA), create main window, message loop.
-// No Tauri, no Svelte, no Node.js — pure Rust + Win32.
-
 #![windows_subsystem = "windows"]
 
 mod constants;
 mod database;
-mod performance;
 mod tabs;
 mod url_util;
 mod webview;
 mod window;
 
 use std::path::PathBuf;
-use windows::core::*;
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::HiDpi;
+use std::process::ExitCode;
+
+use windows::core::{w, Error, Result, HSTRING};
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, TranslateMessage, MSG,
+    DispatchMessageW, GetMessageW, MessageBoxW, TranslateMessage, MB_ICONERROR, MB_OK, MSG,
 };
 
 use crate::constants::DB_FILENAME;
 use crate::database::Database;
 
-fn main() -> Result<()> {
-    // Initialize COM as STA (required for WebView2)
-    unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let message =
+                HSTRING::from(format!("No se pudo iniciar Streamify Browser.\n\n{error}"));
+            unsafe {
+                MessageBoxW(
+                    None,
+                    &message,
+                    w!("Streamify Browser"),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+            ExitCode::FAILURE
+        }
     }
+}
 
-    // Set DPI awareness
-    unsafe {
-        let _ = HiDpi::SetProcessDpiAwareness(HiDpi::PROCESS_PER_MONITOR_DPI_AWARE);
+struct ComApartment;
+
+impl ComApartment {
+    fn initialize() -> Result<Self> {
+        unsafe {
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        }
+        Ok(Self)
     }
+}
 
-    // Open database (next to executable)
-    let db_path = get_db_path();
-    let db = Database::open(&db_path).unwrap_or_else(|e| {
-        eprintln!("Failed to open database at {}: {e}", db_path.display());
-        std::process::exit(1);
-    });
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
 
-    // Create the main window
-    let hwnd = window::create_main_window()?;
+fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let _com = ComApartment::initialize()?;
+    let data_dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("Falta LOCALAPPDATA")?)
+        .join("Streamify Browser");
+    std::fs::create_dir_all(&data_dir)?;
+    // Keep an existing portable database available to users of the original layout.
+    let legacy_db = std::env::current_exe()?.with_file_name(DB_FILENAME);
+    let db_path = if legacy_db.is_file() {
+        legacy_db
+    } else {
+        data_dir.join(DB_FILENAME)
+    };
+    let db = Database::open(&db_path)?;
+    let hwnd = window::create_main_window(db)?;
+    window::init_webview(hwnd, &data_dir.join("WebView2"));
 
-    // Initialize app data (tab state, fonts, address bar control)
-    window::init_app_data(hwnd, db);
-
-    // Show the window
-    window::show_window(hwnd);
-
-    // Initialize WebView2 environment and create first tab
-    // This is done after showing the window so the user sees the UI immediately.
-    window::init_webview(hwnd);
-
-    // Win32 message loop (event-driven, no polling)
     let mut msg = MSG::default();
     unsafe {
         loop {
-            let result = GetMessageW(&mut msg, None, 0, 0).0;
-            match result {
-                -1 => break Err(windows::core::Error::from_thread()),
-                0 => break Ok(()),
+            match GetMessageW(&mut msg, None, 0, 0).0 {
+                -1 => return Err(Error::from_thread().into()),
+                0 => return Ok(()),
                 _ => {
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
@@ -69,13 +86,4 @@ fn main() -> Result<()> {
             }
         }
     }
-}
-
-/// Returns the path to the database file, next to the executable.
-fn get_db_path() -> PathBuf {
-    std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join(DB_FILENAME)
 }

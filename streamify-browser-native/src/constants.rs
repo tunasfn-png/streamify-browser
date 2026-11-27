@@ -8,8 +8,6 @@ use windows::Win32::Foundation::COLORREF;
 
 /// Main background (#0d0d0d)
 pub const CLR_BG: COLORREF = COLORREF(0x000D0D0D);
-/// Surface / slightly lighter (#1a1a1a)
-pub const CLR_SURFACE: COLORREF = COLORREF(0x001A1A1A);
 /// Tab bar / address bar background (#111111)
 pub const CLR_TOOLBAR: COLORREF = COLORREF(0x00111111);
 /// Active tab highlight (#1e1e1e)
@@ -24,8 +22,6 @@ pub const CLR_TEXT: COLORREF = COLORREF(0x00E5E5E5);
 pub const CLR_TEXT_MUTED: COLORREF = COLORREF(0x00888888);
 /// Address bar input background (#0d0d0d)
 pub const CLR_INPUT_BG: COLORREF = COLORREF(0x000D0D0D);
-/// Border / separator (#2a2a2a)
-pub const CLR_BORDER: COLORREF = COLORREF(0x002A2A2A);
 /// Close button hover red (#e53e3e) → BGR: 0x003E3EE5
 pub const CLR_CLOSE_HOVER: COLORREF = COLORREF(0x003E3EE5);
 /// Window button hover (#333333)
@@ -54,8 +50,6 @@ pub const WIN_BTN_W: i32 = 46;
 
 /// Navigation button width (back, forward, reload)
 pub const NAV_BTN_W: i32 = 32;
-/// Navigation button height
-pub const NAV_BTN_H: i32 = 28;
 
 /// Address input left offset (after nav buttons)
 pub const ADDR_INPUT_LEFT: i32 = NAV_BTN_W * 3 + 8; // 3 buttons + gap = 104
@@ -82,12 +76,14 @@ pub const IDC_ADDRESS: u16 = 1001;
 
 // ── WM_APP custom messages ─────────────────────────────────────────
 
-/// WebView2 navigation completed – WPARAM: 0, LPARAM: 0
+/// WebView2 navigation completed. WPARAM identifies the controller; LPARAM indicates success.
 pub const WM_WEBVIEW_NAV_COMPLETE: u32 = 0x8001; // WM_APP + 1
 /// WebView2 title changed – WPARAM: 0, LPARAM: 0
 pub const WM_WEBVIEW_TITLE_CHANGED: u32 = 0x8002;
 /// WebView2 source changed – WPARAM: 0, LPARAM: 0
 pub const WM_WEBVIEW_SOURCE_CHANGED: u32 = 0x8003;
+pub const WM_WEBVIEW_HISTORY_CHANGED: u32 = 0x8004;
+pub const WM_BROWSER_SHORTCUT: u32 = 0x8005;
 
 // ── Strings ────────────────────────────────────────────────────────
 
@@ -99,14 +95,13 @@ pub const APP_TITLE: &str = "Streamify Browser";
 pub const BLANK_TAB_TITLE: &str = "Nueva pestaña";
 /// Internal blank page URL (about:blank served from local)
 pub const BLANK_URL: &str = "about:blank";
+pub const SPOTIFY_URL: &str = "https://open.spotify.com/";
 /// Search engine URL prefix (DuckDuckGo)
 pub const SEARCH_URL: &str = "https://duckduckgo.com/?q=";
-/// WebView2 additional browser args
-pub const WEBVIEW_ARGS: &str = "--disable-gpu";
 
 // ── Database ───────────────────────────────────────────────────────
 
-/// Database file name (stored next to executable)
+/// Database file name
 pub const DB_FILENAME: &str = "streamify_browser.db";
 /// Maximum sessions to keep
 pub const MAX_SESSIONS: usize = 5;
@@ -117,7 +112,5 @@ pub const MAX_SESSIONS: usize = 5;
 pub const FONT_NAME: &str = "Segoe UI";
 /// UI font size for tab titles, address bar
 pub const FONT_SIZE: i32 = 13;
-/// Small font size for muted text
-pub const FONT_SIZE_SMALL: i32 = 11;
 /// App icon glyph
 pub const APP_ICON_GLYPH: &str = "◈";
