@@ -26,6 +26,8 @@ def win32(name, result, *arguments):
 
 find_window = win32("FindWindowW", wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR)
 get_item = win32("GetDlgItem", wintypes.HWND, wintypes.HWND, ctypes.c_int)
+is_minimized = win32("IsIconic", wintypes.BOOL, wintypes.HWND)
+show_window = win32("ShowWindowAsync", wintypes.BOOL, wintypes.HWND, ctypes.c_int)
 window_pid = win32(
     "GetWindowThreadProcessId", wintypes.DWORD, wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
 )
@@ -142,11 +144,11 @@ def report(message):
             output.write(f"- {message}\n")
 
 
-def measure_idle(root, label):
-    time.sleep(8)
+def measure_idle(root, label, settle=8, sample=12):
+    time.sleep(settle)
     before = collect_processes(root)
     started = time.monotonic()
-    time.sleep(12)
+    time.sleep(sample)
     after = collect_processes(root)
     elapsed = time.monotonic() - started
     assert after["gpuDisabled"], "No WebView2 browser process with --disable-gpu was found"
@@ -190,7 +192,12 @@ def check_public_sites(exe, data):
             twitch_loaded = False
         report(f"Twitch public chat | {'loaded' if twitch_loaded else 'unverified in the runner'}")
         if spotify_loaded and twitch_loaded:
-            measure_idle(process.pid, "Public pages with Twitch foreground and Spotify background, signed out")
+            measure_idle(process.pid, "Public pages with Twitch visible and Spotify in background, signed out",
+                         settle=25, sample=25)
+            assert show_window(hwnd, 6)  # SW_MINIMIZE
+            wait_for(lambda: is_minimized(hwnd), "The window did not minimize")
+            measure_idle(process.pid, "Same public pages with the window minimized, signed out",
+                         settle=15, sample=25)
         close(process, hwnd)
     finally:
         if process.poll() is None:

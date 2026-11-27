@@ -264,7 +264,11 @@ fn activate_view(hwnd: HWND) {
     if let Some(controller) = parked {
         webview::resize_controller(&controller, hwnd);
         unsafe {
-            let _ = webview::set_visible(&controller, !IsIconic(hwnd).as_bool());
+            let _ = webview::set_visible(
+                &controller,
+                !IsIconic(hwnd).as_bool(),
+                GetForegroundWindow() == hwnd,
+            );
         }
         refresh_history_buttons(hwnd, &controller);
     }
@@ -308,7 +312,11 @@ fn controller_ready(
     let ready = live.and_then(|live| {
         webview::configure(&live.controller, hwnd, generation)?;
         unsafe {
-            webview::set_visible(&live.controller, !IsIconic(hwnd).as_bool())?;
+            webview::set_visible(
+                &live.controller,
+                !IsIconic(hwnd).as_bool(),
+                GetForegroundWindow() == hwnd,
+            )?;
         }
         Ok(live)
     });
@@ -368,7 +376,7 @@ fn release_active(hwnd: HWND, keep_spotify: bool) {
         false
     })
     .unwrap_or(false);
-    if keep && webview::set_visible(&live.controller, false).is_ok() {
+    if keep && webview::set_visible(&live.controller, false, false).is_ok() {
         let old = with_app(hwnd, |data| data.spotify.replace(live)).flatten();
         drop(old);
     }
@@ -647,12 +655,20 @@ unsafe extern "system" fn wnd_proc(
             }
             if let Some(controller) = active_controller(hwnd) {
                 let minimized = wparam.0 == SIZE_MINIMIZED as usize;
-                let _ = webview::set_visible(&controller, !minimized);
+                let _ =
+                    webview::set_visible(&controller, !minimized, GetForegroundWindow() == hwnd);
                 if !minimized {
                     webview::resize_controller(&controller, hwnd);
                 }
             }
             let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        WM_ACTIVATE => {
+            if let Some(controller) = active_controller(hwnd) {
+                let foreground = wparam.0 as u16 != WA_INACTIVE as u16 && !IsIconic(hwnd).as_bool();
+                webview::set_memory_target(&controller, foreground);
+            }
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         WM_MOVE => {
             if let Some(controller) = active_controller(hwnd) {

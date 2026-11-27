@@ -236,15 +236,14 @@ pub fn history_buttons(controller: &ICoreWebView2Controller) -> (bool, bool) {
     (back.as_bool(), forward.as_bool())
 }
 
-/// Low memory mode leaves scripts and audio active while the controller is hidden.
-pub fn set_visible(controller: &ICoreWebView2Controller, visible: bool) -> Result<()> {
+/// Low memory mode leaves scripts and audio active in an inactive controller.
+pub fn set_memory_target(controller: &ICoreWebView2Controller, foreground: bool) {
     unsafe {
-        controller.SetIsVisible(visible)?;
         if let Ok(view) = controller
             .CoreWebView2()
             .and_then(|view| view.cast::<ICoreWebView2_19>())
         {
-            let level = if visible {
+            let level = if foreground {
                 COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
             } else {
                 COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
@@ -252,5 +251,16 @@ pub fn set_visible(controller: &ICoreWebView2Controller, visible: bool) -> Resul
             let _ = view.SetMemoryUsageTargetLevel(level);
         }
     }
+}
+
+pub fn set_visible(
+    controller: &ICoreWebView2Controller,
+    visible: bool,
+    foreground: bool,
+) -> Result<()> {
+    unsafe {
+        controller.SetIsVisible(visible)?;
+    }
+    set_memory_target(controller, visible && foreground);
     Ok(())
 }
