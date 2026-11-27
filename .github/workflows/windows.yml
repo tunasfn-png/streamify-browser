@@ -1,0 +1,41 @@
+name: Windows x64
+
+on:
+  push:
+    branches: [main, codex/streamify-windows-x64]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: streamify-browser-native
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --target $env:RUST_TARGET
+      - name: Run tests
+        run: cargo +1.96.0 test --target $env:RUST_TARGET
+      - name: Build the release executable
+        run: cargo +1.96.0 build --release --target $env:RUST_TARGET
+      - name: Upload Windows x64 executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: Streamify-Browser-v0.2.0-Windows-x64
+          path: streamify-browser-native/target/x86_64-pc-windows-msvc/release/streamify-browser.exe
+          if-no-files-found: error
