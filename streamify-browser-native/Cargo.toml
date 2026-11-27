@@ -1,0 +1,50 @@
+[package]
+name = "streamify-browser"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.100"
+description = "Streamify Browser – native Win32 + WebView2 browser"
+license = "MIT"
+
+[[bin]]
+name = "streamify-browser"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+urlencoding = "2"
+
+[dependencies.webview2-com]
+version = "0.39"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies.windows-core]
+version = "0.62"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = 2
+strip = true

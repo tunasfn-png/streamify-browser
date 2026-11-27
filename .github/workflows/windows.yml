@@ -1,0 +1,60 @@
+name: Windows x64
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: streamify-browser-native
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal --target $env:RUST_TARGET
+      - name: Run tests
+        run: cargo +1.100.0 test --locked --target $env:RUST_TARGET
+      - name: Build the release executable
+        run: cargo +1.100.0 build --locked --release --target $env:RUST_TARGET
+      - name: Check that the executable needs no redistributable DLLs
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe was not found on the runner.' }
+          $imports = & $dumpbin /dependents "target/$env:RUST_TARGET/release/streamify-browser.exe"
+          $imports | Write-Output
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect executable dependencies.' }
+          if ($imports -match '(VCRUNTIME|MSVCP|WebView2Loader|sqlite3).*\.dll') { throw 'An extra DLL is required.' }
+      - name: Verify the Windows executable with WebView2
+        run: python ../.github/scripts/windows-smoke.py target/$env:RUST_TARGET/release/streamify-browser.exe
+      - name: Upload Windows x64 executable
+        id: artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: streamify-browser-native/target/x86_64-pc-windows-msvc/release/streamify-browser.exe
+          if-no-files-found: error
+          archive: false
+      - name: Report the download link and checksum
+        env:
+          DOWNLOAD_URL: ${{ steps.artifact.outputs.artifact-url }}
+          SHA256: ${{ steps.artifact.outputs.artifact-digest }}
+        run: |
+          Add-Content $env:GITHUB_STEP_SUMMARY "[Download streamify-browser.exe]($env:DOWNLOAD_URL)"
+          Add-Content $env:GITHUB_STEP_SUMMARY "SHA-256 $env:SHA256"
