@@ -5,7 +5,7 @@ La ventana, barra de direcciones y pestañas usan Rust, Win32 y GDI. El contenid
 ## Pestañas y datos
 
 - Las pestañas inactivas conservan su URL y título. Se crean controladores WebView2 bajo demanda y se reutiliza el mismo entorno y perfil.
-- Puede conservarse una pestaña de Spotify en segundo plano para mantener su reproductor al cambiar al chat. Se oculta su controlador y se solicita al motor un objetivo de memoria bajo. El motor mantiene sus scripts activos. Spotify solicita un objetivo de memoria bajo y reduce las animaciones CSS incluso con la pestaña visible. El modo escucha oculta la vista web mientras Spotify sigue abierto. Puedes volver a la misma página desde el menú o con Ctrl+Mayús+M. Las demás pestañas lo solicitan cuando la ventana pierde el foco o se minimiza.
+- Puede conservarse una pestaña de Spotify en segundo plano para mantener su reproductor al cambiar al chat. Se oculta su controlador y se solicita al motor un objetivo de memoria bajo. El motor mantiene sus scripts activos. Spotify solicita un objetivo de memoria bajo incluso con la pestaña visible. El modo escucha oculta la vista web mientras Spotify sigue abierto. Puedes volver a la misma página desde el menú o con Ctrl+Mayús+M. Las demás pestañas lo solicitan cuando la ventana pierde el foco o se minimiza.
 - La interfaz usa mensajes de Win32. El búfer de GDI ocupa el área de la barra de herramientas y las operaciones de SQLite se ejecutan ante eventos de navegación y sesión.
 - El perfil y la base de datos se guardan en `%LOCALAPPDATA%\Streamify Browser`. Si ya hay una base de datos de la versión original junto al ejecutable, se sigue usando esa base de datos.
 

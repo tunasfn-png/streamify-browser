@@ -571,9 +571,6 @@ fn webview_event(hwnd: HWND, event: u32, generation: usize, success: bool) {
     if active && spotify == Some(false) {
         set_listening(hwnd, false);
     }
-    if event == WM_WEBVIEW_NAV_COMPLETE && success && spotify == Some(true) {
-        webview::reduce_spotify_animations(&controller);
-    }
     if active && (event == WM_WEBVIEW_HISTORY_CHANGED || event == WM_WEBVIEW_NAV_COMPLETE) {
         refresh_history_buttons(hwnd, &controller);
     }
